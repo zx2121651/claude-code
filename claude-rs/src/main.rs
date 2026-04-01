@@ -4,9 +4,11 @@ use anyhow::Result;
 pub mod api;
 pub mod engine;
 pub mod tools;
+pub mod tui;
 
 use engine::QueryEngine;
 use tools::BashTool;
+use tui::run_tui;
 
 #[derive(Parser, Debug)]
 #[command(name = "claude")]
@@ -90,11 +92,9 @@ async fn main() -> Result<()> {
     }
 
     if cli.print {
-        println!("Headless print mode enabled (-p).");
         if let Some(ref prompt) = cli.prompt {
             println!("Sending prompt to QueryEngine: {}", prompt);
 
-            // Initialize Core Query Engine
             let api_key = std::env::var("ANTHROPIC_API_KEY").unwrap_or_else(|_| "dummy_key".to_string());
             let mut engine = QueryEngine::new(
                 api_key,
@@ -105,13 +105,16 @@ async fn main() -> Result<()> {
             // Register default tools
             engine.register_tool(Box::new(BashTool));
 
+            // For now, bypass actual API call in print mode to avoid API errors without a key
             // engine.submit_message(prompt).await?;
+            println!("Claude [Headless]: API interaction mocked. Provide a real API key.");
 
         } else {
             eprintln!("Error: A prompt is required for --print mode.");
         }
     } else {
-        println!("Starting Interactive REPL UI...");
+        // Run the interactive UI
+        run_tui().await?;
     }
 
     Ok(())
