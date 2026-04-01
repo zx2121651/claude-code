@@ -1,7 +1,12 @@
 use clap::{Parser, Subcommand};
 use anyhow::Result;
 
+pub mod api;
+pub mod engine;
 pub mod tools;
+
+use engine::QueryEngine;
+use tools::BashTool;
 
 #[derive(Parser, Debug)]
 #[command(name = "claude")]
@@ -88,6 +93,20 @@ async fn main() -> Result<()> {
         println!("Headless print mode enabled (-p).");
         if let Some(ref prompt) = cli.prompt {
             println!("Sending prompt to QueryEngine: {}", prompt);
+
+            // Initialize Core Query Engine
+            let api_key = std::env::var("ANTHROPIC_API_KEY").unwrap_or_else(|_| "dummy_key".to_string());
+            let mut engine = QueryEngine::new(
+                api_key,
+                cli.model.unwrap_or_else(|| "claude-3-7-sonnet-20250219".to_string()),
+                Some("You are Claude Code, an AI assistant.")
+            );
+
+            // Register default tools
+            engine.register_tool(Box::new(BashTool));
+
+            // engine.submit_message(prompt).await?;
+
         } else {
             eprintln!("Error: A prompt is required for --print mode.");
         }
