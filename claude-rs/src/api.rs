@@ -1,4 +1,4 @@
-use reqwest::{Client, Error as ReqwestError};
+use reqwest::{Client, Error as ReqwestError, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -39,6 +39,8 @@ pub struct CreateMessageRequest<'a> {
     pub system: Option<&'a str>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<ToolSchema>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream: Option<bool>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -79,5 +81,23 @@ impl AnthropicClient {
             .await?;
 
         response.json::<CreateMessageResponse>().await
+    }
+
+    /// Sends a streaming request to the Anthropic Messages API.
+    pub async fn create_message_stream(
+        &self,
+        mut req: CreateMessageRequest<'_>
+    ) -> Result<Response, ReqwestError> {
+        req.stream = Some(true);
+        let url = "https://api.anthropic.com/v1/messages";
+
+        self.client.post(url)
+            .header("x-api-key", &self.api_key)
+            .header("anthropic-version", "2023-06-01")
+            .header("content-type", "application/json")
+            .header("accept", "text/event-stream")
+            .json(&req)
+            .send()
+            .await
     }
 }
