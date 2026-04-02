@@ -5,9 +5,10 @@ pub mod api;
 pub mod engine;
 pub mod tools;
 pub mod tui;
+pub mod coordinator;
 
 use engine::QueryEngine;
-use tools::BashTool;
+use tools::{BashTool, AgentTool};
 use tui::run_tui;
 
 #[derive(Parser, Debug)]
@@ -104,6 +105,7 @@ async fn main() -> Result<()> {
 
             // Register default tools
             engine.register_tool(Box::new(BashTool));
+            engine.register_tool(Box::new(AgentTool {}));
 
             // For now, bypass actual API call in print mode to avoid API errors without a key
             // engine.submit_message(prompt).await?;
