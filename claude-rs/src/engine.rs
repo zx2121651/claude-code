@@ -3,6 +3,17 @@ use crate::tools::{Tool, ToolUseContext};
 use anyhow::{anyhow, Result};
 use futures_util::StreamExt;
 use std::collections::HashMap;
+use tokio::sync::mpsc;
+
+#[derive(Debug, Clone)]
+pub enum EngineEvent {
+    TextDelta(String),
+    ToolExecutionStarted(String), // Tool Name
+    ToolExecutionCompleted(String, String), // Tool Name, Result
+    ToolExecutionError(String, String), // Tool Name, Error message
+    TurnCompleted,
+    Error(String),
+}
 
 pub struct QueryEngine<'a> {
     client: AnthropicClient,
@@ -27,7 +38,10 @@ impl<'a> QueryEngine<'a> {
         self.tools.insert(tool.name().to_string(), tool);
     }
 
-    pub async fn submit_message(&mut self, prompt: &str) -> Result<()> {
+    /// Submit a user prompt to the engine. If an `mpsc::Sender` is provided,
+    /// it streams events (text chunks, tool executions) back to the caller (e.g. TUI).
+    /// Otherwise, it prints directly to standard output.
+    pub async fn submit_message(&mut self, prompt: &str, tx: Option<mpsc::Sender<EngineEvent>>) -> Result<()> {
         self.messages.push(Message {
             role: Role::User,
             content: vec![ContentBlock::Text {
@@ -54,6 +68,9 @@ impl<'a> QueryEngine<'a> {
             let mut response = self.client.create_message_stream(request).await?;
             if !response.status().is_success() {
                 let err_text = response.text().await?;
+                if let Some(ref sender) = tx {
+                    let _ = sender.send(EngineEvent::Error(err_text.clone())).await;
+                }
                 return Err(anyhow!("API Error: {}", err_text));
             }
 
@@ -65,7 +82,6 @@ impl<'a> QueryEngine<'a> {
             let mut final_blocks = Vec::new();
             let mut requires_followup = false;
 
-            // Simplified SSE parser for demonstration purposes
             while let Some(chunk_res) = response.chunk().await? {
                 let chunk_str = String::from_utf8_lossy(&chunk_res);
                 for line in chunk_str.lines() {
@@ -89,9 +105,15 @@ impl<'a> QueryEngine<'a> {
                                     if delta_type == "text_delta" {
                                         if let Some(text) = json["delta"]["text"].as_str() {
                                             current_text.push_str(text);
-                                            print!("{}", text); // Stream output directly to stdout
-                                            use std::io::Write;
-                                            let _ = std::io::stdout().flush();
+
+                                            // Send to channel or print to stdout
+                                            if let Some(ref sender) = tx {
+                                                let _ = sender.send(EngineEvent::TextDelta(text.to_string())).await;
+                                            } else {
+                                                print!("{}", text);
+                                                use std::io::Write;
+                                                let _ = std::io::stdout().flush();
+                                            }
                                         }
                                     } else if delta_type == "input_json_delta" {
                                         if let Some(partial_json) = json["delta"]["partial_json"].as_str() {
@@ -112,7 +134,12 @@ impl<'a> QueryEngine<'a> {
                                             input: parsed_input,
                                         });
                                         requires_followup = true;
-                                        println!("\n[Running Tool: {}]", current_tool_name);
+
+                                        if let Some(ref sender) = tx {
+                                            let _ = sender.send(EngineEvent::ToolExecutionStarted(current_tool_name.clone())).await;
+                                        } else {
+                                            println!("\n[Running Tool: {}]", current_tool_name);
+                                        }
 
                                         current_tool_name.clear();
                                         current_tool_use_id.clear();
@@ -125,7 +152,9 @@ impl<'a> QueryEngine<'a> {
                     }
                 }
             }
-            println!();
+            if tx.is_none() {
+                println!();
+            }
 
             self.messages.push(Message {
                 role: Role::Assistant,
@@ -133,6 +162,9 @@ impl<'a> QueryEngine<'a> {
             });
 
             if !requires_followup {
+                if let Some(ref sender) = tx {
+                    let _ = sender.send(EngineEvent::TurnCompleted).await;
+                }
                 break;
             }
 
@@ -146,16 +178,24 @@ impl<'a> QueryEngine<'a> {
                         };
                         match tool.call(input, &mut context).await {
                             Ok(result) => {
+                                let res_str = result.data.to_string();
+                                if let Some(ref sender) = tx {
+                                    let _ = sender.send(EngineEvent::ToolExecutionCompleted(name.clone(), res_str.clone())).await;
+                                }
                                 tool_results.push(ContentBlock::ToolResult {
                                     tool_use_id: id,
-                                    content: result.data.to_string(),
+                                    content: res_str,
                                     is_error: Some(false),
                                 });
                             }
                             Err(e) => {
+                                let err_str = e.to_string();
+                                if let Some(ref sender) = tx {
+                                    let _ = sender.send(EngineEvent::ToolExecutionError(name.clone(), err_str.clone())).await;
+                                }
                                 tool_results.push(ContentBlock::ToolResult {
                                     tool_use_id: id,
-                                    content: format!("Tool Error: {}", e),
+                                    content: format!("Tool Error: {}", err_str),
                                     is_error: Some(true),
                                 });
                             }
