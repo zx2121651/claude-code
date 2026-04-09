@@ -3,9 +3,9 @@ use crate::tools::{Tool, ToolUseContext};
 use anyhow::{anyhow, Result};
 use futures_util::StreamExt;
 use std::collections::HashMap;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum EngineEvent {
     TextDelta(String),
     ToolExecutionStarted(String), // Tool Name
@@ -13,6 +13,9 @@ pub enum EngineEvent {
     ToolExecutionError(String, String), // Tool Name, Error message
     TurnCompleted,
     Error(String),
+    // Security Sandbox: Request user permission before executing a destructive tool.
+    // Contains the tool name, the command/input, and a oneshot sender to reply true (allow) or false (deny).
+    PermissionRequested(String, String, oneshot::Sender<bool>),
 }
 
 pub struct QueryEngine<'a> {
@@ -38,9 +41,6 @@ impl<'a> QueryEngine<'a> {
         self.tools.insert(tool.name().to_string(), tool);
     }
 
-    /// Submit a user prompt to the engine. If an `mpsc::Sender` is provided,
-    /// it streams events (text chunks, tool executions) back to the caller (e.g. TUI).
-    /// Otherwise, it prints directly to standard output.
     pub async fn submit_message(&mut self, prompt: &str, tx: Option<mpsc::Sender<EngineEvent>>) -> Result<()> {
         self.messages.push(Message {
             role: Role::User,
@@ -106,7 +106,6 @@ impl<'a> QueryEngine<'a> {
                                         if let Some(text) = json["delta"]["text"].as_str() {
                                             current_text.push_str(text);
 
-                                            // Send to channel or print to stdout
                                             if let Some(ref sender) = tx {
                                                 let _ = sender.send(EngineEvent::TextDelta(text.to_string())).await;
                                             } else {
@@ -172,10 +171,45 @@ impl<'a> QueryEngine<'a> {
             for block in final_blocks {
                 if let ContentBlock::ToolUse { id, name, input } = block {
                     if let Some(tool) = self.tools.get(&name) {
+
+                        // --- SECURITY SANDBOX (Permission Request) ---
+                        let mut allowed = true;
+
+                        if tool.is_destructive(&input) {
+                            if let Some(ref sender) = tx {
+                                let (perm_tx, perm_rx) = oneshot::channel();
+                                let input_str = serde_json::to_string_pretty(&input).unwrap_or_default();
+
+                                let _ = sender.send(EngineEvent::PermissionRequested(
+                                    name.clone(),
+                                    input_str,
+                                    perm_tx
+                                )).await;
+
+                                // Suspend the engine and await the user's decision from the UI
+                                allowed = perm_rx.await.unwrap_or(false);
+                            }
+                        }
+
+                        if !allowed {
+                            let deny_msg = "User denied execution of this tool.".to_string();
+                            if let Some(ref sender) = tx {
+                                let _ = sender.send(EngineEvent::ToolExecutionError(name.clone(), deny_msg.clone())).await;
+                            }
+                            tool_results.push(ContentBlock::ToolResult {
+                                tool_use_id: id,
+                                content: deny_msg,
+                                is_error: Some(true),
+                            });
+                            continue;
+                        }
+                        // ---------------------------------------------
+
                         let mut context = ToolUseContext {
                             agent_id: None,
                             is_non_interactive_session: false,
                         };
+
                         match tool.call(input, &mut context).await {
                             Ok(result) => {
                                 let res_str = result.data.to_string();

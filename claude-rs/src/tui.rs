@@ -13,7 +13,7 @@ use ratatui::{
     Terminal, Frame,
 };
 use std::{io, time::Duration};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 use crate::engine::{QueryEngine, EngineEvent};
 use crate::tools::{BashTool, AgentTool, FileReadTool, FileEditTool, GlobTool};
@@ -22,6 +22,7 @@ pub struct App {
     pub input: String,
     pub messages: Vec<String>,
     pub is_processing: bool,
+    pub pending_permission: Option<(String, String, oneshot::Sender<bool>)>,
 }
 
 impl Default for App {
@@ -30,6 +31,7 @@ impl Default for App {
             input: String::new(),
             messages: vec!["Welcome to Claude Code (Rust Port)!".to_string()],
             is_processing: false,
+            pending_permission: None,
         }
     }
 }
@@ -86,7 +88,7 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App, api_key:
         while let Ok(event) = rx_engine.try_recv() {
             match event {
                 EngineEvent::TextDelta(text) => {
-                    let text = text.replace("\n", ""); // Simple cleanup for MVP
+                    let text = text.replace("\n", "");
                     if let Some(last) = app.messages.last_mut() {
                         if last.starts_with("Claude: ") {
                             last.push_str(&text);
@@ -112,11 +114,40 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App, api_key:
                     app.messages.push(format!("API Error: {}", err));
                     app.is_processing = false;
                 }
+                EngineEvent::PermissionRequested(tool_name, tool_input, reply_tx) => {
+                    app.pending_permission = Some((tool_name, tool_input, reply_tx));
+                }
             }
         }
 
         if event::poll(Duration::from_millis(16))? {
             if let Event::Key(key) = event::read()? {
+
+                if app.pending_permission.is_some() {
+                    let handled = match key.code {
+                        KeyCode::Char('y') | KeyCode::Char('Y') => {
+                            if let Some((_, _, reply_tx)) = app.pending_permission.take() {
+                                let _ = reply_tx.send(true);
+                                app.messages.push("[User Allowed Tool Execution]".to_string());
+                            }
+                            true
+                        }
+                        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc | KeyCode::Enter => {
+                            if let Some((_, _, reply_tx)) = app.pending_permission.take() {
+                                let _ = reply_tx.send(false);
+                                app.messages.push("[User Denied Tool Execution]".to_string());
+                            }
+                            true
+                        }
+                        _ => false
+                    };
+
+                    if handled {
+                        continue;
+                    }
+                }
+
+                // Normal input processing
                 match key.code {
                     KeyCode::Char(c) => {
                         app.input.push(c);
@@ -145,16 +176,19 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App, api_key:
 }
 
 fn ui(f: &mut Frame, app: &App) {
+    let mut constraints = vec![
+        Constraint::Min(3),
+        Constraint::Length(3),
+    ];
+
+    if app.pending_permission.is_some() {
+        constraints.insert(1, Constraint::Length(6));
+    }
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .margin(1)
-        .constraints(
-            [
-                Constraint::Min(3),
-                Constraint::Length(3),
-            ]
-            .as_ref(),
-        )
+        .constraints(constraints.clone()) // Fixed the inference error here
         .split(f.size());
 
     let messages: Vec<Line> = app
@@ -169,14 +203,34 @@ fn ui(f: &mut Frame, app: &App) {
         .block(Block::default().borders(Borders::ALL).title(" Transcript "));
     f.render_widget(history_widget, chunks[0]);
 
-    let input_title = if app.is_processing {
-        " Claude is typing... "
-    } else {
-        " Input (Press Enter to submit, Esc to quit) "
-    };
+    if let Some((tool_name, tool_input, _)) = &app.pending_permission {
+        let warning_text = vec![
+            Line::from(vec![Span::styled(format!("Danger: Tool '{}' requested permission to run.", tool_name), Style::default().fg(Color::Red))]),
+            Line::from(vec![Span::raw("Input:")]),
+            Line::from(vec![Span::styled(tool_input.as_str(), Style::default().fg(Color::Yellow))]),
+            Line::from(vec![Span::styled("Do you want to allow this? [y/N]", Style::default().fg(Color::White).bg(Color::Red))]),
+        ];
 
-    let input_widget = Paragraph::new(app.input.as_str())
-        .style(Style::default().fg(if app.is_processing { Color::DarkGray } else { Color::Yellow }))
-        .block(Block::default().borders(Borders::ALL).title(input_title));
-    f.render_widget(input_widget, chunks[1]);
+        let warning_widget = Paragraph::new(warning_text)
+            .block(Block::default().borders(Borders::ALL).style(Style::default().fg(Color::Red)));
+
+        f.render_widget(warning_widget, chunks[1]);
+
+        let input_widget = Paragraph::new(app.input.as_str())
+            .style(Style::default().fg(Color::DarkGray))
+            .block(Block::default().borders(Borders::ALL).title(" Engine Suspended "));
+        f.render_widget(input_widget, chunks[2]);
+
+    } else {
+        let input_title = if app.is_processing {
+            " Claude is typing... "
+        } else {
+            " Input (Press Enter to submit, Esc to quit) "
+        };
+
+        let input_widget = Paragraph::new(app.input.as_str())
+            .style(Style::default().fg(if app.is_processing { Color::DarkGray } else { Color::Yellow }))
+            .block(Block::default().borders(Borders::ALL).title(input_title));
+        f.render_widget(input_widget, chunks[1]);
+    }
 }
