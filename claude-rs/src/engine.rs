@@ -4,19 +4,22 @@ use anyhow::{anyhow, Result};
 use futures_util::StreamExt;
 use std::collections::HashMap;
 use tokio::sync::{mpsc, oneshot};
+use tiktoken_rs::cl100k_base;
 
 #[derive(Debug)]
 pub enum EngineEvent {
     TextDelta(String),
-    ToolExecutionStarted(String), // Tool Name
-    ToolExecutionCompleted(String, String), // Tool Name, Result
-    ToolExecutionError(String, String), // Tool Name, Error message
+    ToolExecutionStarted(String),
+    ToolExecutionCompleted(String, String),
+    ToolExecutionError(String, String),
     TurnCompleted,
     Error(String),
-    // Security Sandbox: Request user permission before executing a destructive tool.
-    // Contains the tool name, the command/input, and a oneshot sender to reply true (allow) or false (deny).
     PermissionRequested(String, String, oneshot::Sender<bool>),
+    // Signal to UI that context was compacted to save tokens
+    ContextCompacted(usize, usize), // original_tokens, new_tokens
 }
+
+const AUTOCOMPACT_THRESHOLD: usize = 180_000; // Threshold before we compress
 
 pub struct QueryEngine<'a> {
     client: AnthropicClient,
@@ -41,6 +44,65 @@ impl<'a> QueryEngine<'a> {
         self.tools.insert(tool.name().to_string(), tool);
     }
 
+    /// Fast and dirty local token estimator using cl100k_base.
+    /// Anthropic has their own tokenizer, but cl100k_base is close enough for thresholding.
+    fn estimate_tokens(&self) -> usize {
+        let bpe = cl100k_base().unwrap();
+        let mut total = 0;
+
+        if let Some(sys) = self.system_prompt {
+            total += bpe.encode_ordinary(sys).len();
+        }
+
+        for msg in &self.messages {
+            for block in &msg.content {
+                match block {
+                    ContentBlock::Text { text } => total += bpe.encode_ordinary(text).len(),
+                    ContentBlock::ToolResult { content, .. } => total += bpe.encode_ordinary(content).len(),
+                    ContentBlock::ToolUse { input, .. } => total += bpe.encode_ordinary(&input.to_string()).len(),
+                }
+            }
+        }
+        total
+    }
+
+    /// Flushes older messages when we cross the token limit
+    async fn auto_compact_if_needed(&mut self, tx: &Option<mpsc::Sender<EngineEvent>>) {
+        let tokens = self.estimate_tokens();
+        if tokens < AUTOCOMPACT_THRESHOLD {
+            return;
+        }
+
+        // In a real implementation:
+        // 1. Spawn a sub-agent to summarize self.messages into a markdown document
+        // 2. Clear self.messages
+        // 3. Push a System/User message containing the summary
+
+        let original_tokens = tokens;
+
+        // MVP Simulation: Just drop the oldest 50% of messages
+        let len = self.messages.len();
+        if len > 2 {
+            let keep_idx = len / 2;
+            self.messages.drain(0..keep_idx);
+
+            // Insert a marker
+            self.messages.insert(0, Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text {
+                    text: "<compact_boundary>Previous conversation was summarized to save context tokens.</compact_boundary>".to_string()
+                }]
+            });
+        }
+
+        let new_tokens = self.estimate_tokens();
+
+        if let Some(sender) = tx {
+            let _ = sender.send(EngineEvent::ContextCompacted(original_tokens, new_tokens)).await;
+        }
+        println!("[AutoCompact] Shrunk context from {} to {} tokens", original_tokens, new_tokens);
+    }
+
     pub async fn submit_message(&mut self, prompt: &str, tx: Option<mpsc::Sender<EngineEvent>>) -> Result<()> {
         self.messages.push(Message {
             role: Role::User,
@@ -50,6 +112,9 @@ impl<'a> QueryEngine<'a> {
         });
 
         loop {
+            // Check context limits before sending to API
+            self.auto_compact_if_needed(&tx).await;
+
             let api_tools: Vec<ToolSchema> = self.tools.iter().map(|(name, _t)| ToolSchema {
                 name: name.clone(),
                 description: "Auto-generated tool description".into(),
@@ -172,9 +237,7 @@ impl<'a> QueryEngine<'a> {
                 if let ContentBlock::ToolUse { id, name, input } = block {
                     if let Some(tool) = self.tools.get(&name) {
 
-                        // --- SECURITY SANDBOX (Permission Request) ---
                         let mut allowed = true;
-
                         if tool.is_destructive(&input) {
                             if let Some(ref sender) = tx {
                                 let (perm_tx, perm_rx) = oneshot::channel();
@@ -186,7 +249,6 @@ impl<'a> QueryEngine<'a> {
                                     perm_tx
                                 )).await;
 
-                                // Suspend the engine and await the user's decision from the UI
                                 allowed = perm_rx.await.unwrap_or(false);
                             }
                         }
@@ -203,7 +265,6 @@ impl<'a> QueryEngine<'a> {
                             });
                             continue;
                         }
-                        // ---------------------------------------------
 
                         let mut context = ToolUseContext {
                             agent_id: None,

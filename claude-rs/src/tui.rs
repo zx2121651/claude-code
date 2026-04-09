@@ -117,6 +117,9 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App, api_key:
                 EngineEvent::PermissionRequested(tool_name, tool_input, reply_tx) => {
                     app.pending_permission = Some((tool_name, tool_input, reply_tx));
                 }
+                EngineEvent::ContextCompacted(original, new_tokens) => {
+                    app.messages.push(format!("[System] Context was auto-compacted to save limits ({} -> {} tokens).", original, new_tokens));
+                }
             }
         }
 
@@ -188,7 +191,7 @@ fn ui(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .margin(1)
-        .constraints(constraints.clone()) // Fixed the inference error here
+        .constraints(constraints.clone())
         .split(f.size());
 
     let messages: Vec<Line> = app
