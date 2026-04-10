@@ -1,5 +1,5 @@
-use crate::api::{AnthropicClient, ContentBlock, CreateMessageRequest, Message, Role, ToolSchema};
-use crate::tools::{Tool, ToolUseContext};
+use claude_api::{AnthropicClient, ContentBlock, CreateMessageRequest, Message, Role, ToolSchema};
+use claude_tools::{Tool, ToolUseContext};
 use anyhow::{anyhow, Result};
 use futures_util::StreamExt;
 use std::collections::HashMap;

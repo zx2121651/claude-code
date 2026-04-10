@@ -2,15 +2,13 @@ use clap::{Parser, Subcommand};
 use anyhow::Result;
 use dotenvy::dotenv;
 
-pub mod api;
 pub mod engine;
-pub mod tools;
 pub mod tui;
 pub mod coordinator;
 pub mod mcp;
 
 use engine::QueryEngine;
-use tools::{BashTool, AgentTool, FileReadTool, FileEditTool, GlobTool};
+use claude_tools::{agent::AgentTool, bash::BashTool, file_edit::FileEditTool, file_read::FileReadTool, glob::GlobTool};
 use tui::run_tui;
 
 #[derive(Parser, Debug)]
@@ -55,7 +53,6 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Load .env file if it exists
     let _ = dotenv();
 
     let cli = Cli::parse();
@@ -67,12 +64,6 @@ async fn main() -> Result<()> {
     match &cli.command {
         Some(Commands::RemoteControl { name, spawn }) => {
             println!("Starting Remote Control Bridge...");
-            if let Some(n) = name {
-                println!("Session name: {}", n);
-            }
-            if let Some(s) = spawn {
-                println!("Spawn mode: {}", s);
-            }
             return Ok(());
         }
         Some(Commands::Mcp { .. }) => {

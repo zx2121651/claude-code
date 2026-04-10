@@ -16,7 +16,7 @@ use std::{io, time::Duration};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::engine::{QueryEngine, EngineEvent};
-use crate::tools::{BashTool, AgentTool, FileReadTool, FileEditTool, GlobTool};
+use claude_tools::{agent::AgentTool, bash::BashTool, file_edit::FileEditTool, file_read::FileReadTool, glob::GlobTool};
 
 pub struct App {
     pub input: String,
@@ -150,7 +150,6 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App, api_key:
                     }
                 }
 
-                // Normal input processing
                 match key.code {
                     KeyCode::Char(c) => {
                         app.input.push(c);

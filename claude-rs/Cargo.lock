@@ -229,21 +229,43 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
-name = "claude-code"
+name = "claude-api"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "reqwest",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "claude-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "claude-api",
+ "claude-tools",
+ "crossterm",
+ "dotenvy",
+ "futures-util",
+ "ratatui",
+ "serde",
+ "serde_json",
+ "tiktoken-rs",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "claude-tools"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "clap",
- "crossterm",
- "dotenvy",
- "futures-util",
  "glob",
- "ratatui",
- "reqwest",
  "serde",
  "serde_json",
- "tiktoken-rs",
  "tokio",
  "uuid",
 ]
