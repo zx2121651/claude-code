@@ -6,10 +6,12 @@ pub mod engine;
 pub mod tui;
 pub mod coordinator;
 pub mod mcp;
+pub mod config;
 
 use engine::QueryEngine;
 use claude_tools::{agent::AgentTool, bash::BashTool, file_edit::FileEditTool, file_read::FileReadTool, glob::GlobTool};
 use tui::run_tui;
+use config::ConfigManager;
 
 #[derive(Parser, Debug)]
 #[command(name = "claude")]
@@ -54,7 +56,6 @@ enum Commands {
 #[tokio::main]
 async fn main() -> Result<()> {
     let _ = dotenv();
-
     let cli = Cli::parse();
 
     if cli.debug {
@@ -62,7 +63,7 @@ async fn main() -> Result<()> {
     }
 
     match &cli.command {
-        Some(Commands::RemoteControl { name, spawn }) => {
+        Some(Commands::RemoteControl { name: _, spawn: _ }) => {
             println!("Starting Remote Control Bridge...");
             return Ok(());
         }
@@ -73,7 +74,18 @@ async fn main() -> Result<()> {
         None => {}
     }
 
+    // 1. Load cascading configurations
+    let mut config_mgr = ConfigManager::new().await?;
+    // Override settings with CLI flags
+    if let Some(ref m) = cli.model {
+        config_mgr.active_settings.model = Some(m.clone());
+    }
+
     let api_key = std::env::var("ANTHROPIC_API_KEY").unwrap_or_else(|_| "".to_string());
+
+    // Resolve effective model
+    let effective_model = config_mgr.active_settings.model.unwrap_or_else(|| "claude-3-7-sonnet-20250219".to_string());
+    let effective_sys_prompt = config_mgr.active_settings.custom_system_prompt.unwrap_or_else(|| "You are Claude Code, an AI assistant.".to_string());
 
     if cli.print {
         if let Some(ref prompt) = cli.prompt {
@@ -86,8 +98,8 @@ async fn main() -> Result<()> {
 
             let mut engine = QueryEngine::new(
                 api_key,
-                cli.model.unwrap_or_else(|| "claude-3-7-sonnet-20250219".to_string()),
-                Some("You are Claude Code, an AI assistant.")
+                effective_model,
+                Some(&effective_sys_prompt)
             );
 
             engine.register_tool(Box::new(BashTool));
@@ -105,7 +117,7 @@ async fn main() -> Result<()> {
             eprintln!("Error: ANTHROPIC_API_KEY is not set. Please set it in your environment or .env file before launching the interactive session.");
             return Ok(());
         }
-        run_tui(api_key, cli.model.unwrap_or_else(|| "claude-3-7-sonnet-20250219".to_string())).await?;
+        run_tui(api_key, effective_model, effective_sys_prompt).await?;
     }
 
     Ok(())

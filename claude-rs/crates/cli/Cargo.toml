@@ -17,3 +17,4 @@ futures-util = "0.3.30"
 dotenvy = "0.15.7"
 uuid = { version = "1.8.0", features = ["v4", "fast-rng"] }
 tiktoken-rs = "0.5.8"
+dirs = "6.0.0"

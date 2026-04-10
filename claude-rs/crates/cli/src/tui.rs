@@ -36,7 +36,7 @@ impl Default for App {
     }
 }
 
-pub async fn run_tui(api_key: String, model: String) -> Result<()> {
+pub async fn run_tui(api_key: String, model: String, sys_prompt: String) -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
@@ -45,7 +45,7 @@ pub async fn run_tui(api_key: String, model: String) -> Result<()> {
 
     let mut app = App::default();
 
-    let res = run_app(&mut terminal, &mut app, api_key, model).await;
+    let res = run_app(&mut terminal, &mut app, api_key, model, sys_prompt).await;
 
     disable_raw_mode()?;
     execute!(
@@ -61,7 +61,7 @@ pub async fn run_tui(api_key: String, model: String) -> Result<()> {
     Ok(())
 }
 
-async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App, api_key: String, model: String) -> Result<()> {
+async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App, api_key: String, model: String, sys_prompt: String) -> Result<()> {
     let (tx_engine, mut rx_engine) = mpsc::channel::<EngineEvent>(100);
     let (tx_ui, mut rx_ui) = mpsc::channel::<String>(10);
 
@@ -69,7 +69,7 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App, api_key:
         let mut engine = QueryEngine::new(
             api_key,
             model,
-            Some("You are Claude Code, an AI assistant.")
+            Some(&sys_prompt)
         );
         engine.register_tool(Box::new(BashTool));
         engine.register_tool(Box::new(AgentTool {}));
