@@ -386,6 +386,22 @@ export const FileEditTool = buildTool({
   },
   async call(
     input: FileEditInput,
+    { readFileState, userModified, updateFileHistoryState, options: { tools, isNonInteractiveSession } }: ToolUseContext,
+    canUseTool: CanUseToolFn,
+    parentMessage: AssistantMessage,
+  ) {
+    const nativeBindings = getNativeBindings();
+    if (nativeBindings) {
+      try {
+        const result = await nativeBindings.applyFileEdit({ absolutePath: input.file_path, oldString: input.old_string, newString: input.new_string });
+        return { data: result };
+      } catch (e) {
+        throw e;
+      }
+    }
+
+    // --- FALLBACK TO TYPESCRIPT ---
+    input: FileEditInput,
     {
       readFileState,
       userModified,
@@ -623,3 +639,4 @@ function readFileForEdit(absoluteFilePath: string): {
     throw e
   }
 }
+import { getNativeBindings } from '../nativeBindings.js';
